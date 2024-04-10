@@ -29,12 +29,12 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-from ...activations import ACT2FN
-from ...cache_utils import Cache, DynamicCache
-from ...modeling_attn_mask_utils import _prepare_4d_causal_attention_mask, _prepare_4d_causal_attention_mask_for_sdpa
-from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
-from ...modeling_utils import PreTrainedModel
-from ...utils import (
+from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask, _prepare_4d_causal_attention_mask_for_sdpa
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
+from transformers.modeling_utils import PreTrainedModel
+from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
     is_flash_attn_2_available,
@@ -42,6 +42,7 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
+
 from .configuration_qwen2 import Qwen2Config
 
 
@@ -58,12 +59,20 @@ logger = logging.get_logger(__name__)
 _CHECKPOINT_FOR_DOC = "Qwen/Qwen2-7B-beta"
 _CONFIG_FOR_DOC = "Qwen2Config"
 
-
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
+    """
+    从带有attention_mask的张量中提取有效（未被mask）数据索引。
+    attention_mask通常用于指示输入序列中哪些位置是有意义的（通常是1）和哪些位置是填充的（通常是0）。
+    """
+    # 计算批次中每个样本的有效序列长度，即找到真实的token数
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
+    # 找到所有有效的（非0）元素的位置，转换为一维张量。
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
+    # 找到批次中最大的有效序列长度，这对于后续处理（如将所有样本对齐到同一长度）非常重要。
     max_seqlen_in_batch = seqlens_in_batch.max().item()
+    # 计算累积序列长度，即每个样本的真实token数累加起来，用于在合并批量数据时恢复原始样本顺序。
+    # 在此处使用torch.cumsum并进行padding，是因为在合并时需要考虑batch的第一个样本起始位置为0。
     cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
     return (
         indices,
@@ -93,25 +102,38 @@ class Qwen2RMSNorm(nn.Module):
 # Copied from transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding with Mistral->Qwen2
 class Qwen2RotaryEmbedding(nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+        """ 旋转位置编码
+            - dim (int): 旋转嵌入的维度大小。
+            - max_position_embeddings (int): 预计算的最大位置嵌入数，默认为2048。
+            - base (int): 用于计算逆频率的基本频率，默认为10000。
+        """
         super().__init__()
 
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
+        # 计算逆频率值，并将其注册为模型的缓冲区
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float().to(device) / self.dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
+        # 为了支持`torch.jit.trace`功能，立即计算预存储的余弦和正弦缓存
         self._set_cos_sin_cache(
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
+        """ 预计算的余弦和正弦缓存
+        """
         self.max_seq_len_cached = seq_len
+        # 创建一个从0到最大序列长度-1的整数张量，与 inv_freq 具有相同的设备和数据类型
         t = torch.arange(self.max_seq_len_cached, device=device, dtype=torch.int64).type_as(self.inv_freq)
 
+        # 计算每个位置与每个维度的频率，形成频谱矩阵
         freqs = torch.outer(t, self.inv_freq)
+        
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        # 不同于论文中的实现，这里采用了不同的排列方式以获得相同的计算结果
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
@@ -217,6 +239,7 @@ class Qwen2Attention(nn.Module):
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
         self.rope_theta = config.rope_theta
+        # 因果自回归模式
         self.is_causal = True
         self.attention_dropout = config.attention_dropout
 
@@ -256,6 +279,7 @@ class Qwen2Attention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
+        # 重新投影，变成多头注意力结构
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -269,17 +293,21 @@ class Qwen2Attention(nn.Module):
                     "with a layer index."
                 )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+        # 应用旋转位置编码到 qk 向量
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
+        # 如果存在缓存，则更新 kv 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # repeat k/v heads if n_kv_heads < n_heads
+        # 如果 num_key_value_heads 小于 num_heads，则重复key和value向量以匹配头数量
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
+        # 计算注意力权重
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
         if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
@@ -296,9 +324,10 @@ class Qwen2Attention(nn.Module):
 
             attn_weights = attn_weights + attention_mask
 
-        # upcast attention to fp32
+        # softmax归一化注意力权重，并转换至float32类型以防止数值溢出
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        # 注意力输出
         attn_output = torch.matmul(attn_weights, value_states)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
@@ -306,10 +335,12 @@ class Qwen2Attention(nn.Module):
                 f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
                 f" {attn_output.size()}"
             )
-
+        
+        # 还原注意力输出的形状以与后续层对接
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
+        # 通过o_proj层进一步处理注意力输出
         attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
@@ -363,6 +394,7 @@ class Qwen2FlashAttention2(Qwen2Attention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
+        # 获取键状态的绝对序列长度（考虑缓存的过去关键值）
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             if self.layer_idx is None:
@@ -374,11 +406,12 @@ class Qwen2FlashAttention2(Qwen2Attention):
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
 
         # Because the input can be padded, the absolute sequence length depends on the max position id.
+        # 计算旋转位置嵌入所需的序列长度（基于最大位置ID）
         rotary_seq_len = max(kv_seq_len, position_ids[:, -1].max().item()) + 1
         cos, sin = self.rotary_emb(value_states, seq_len=rotary_seq_len)
-
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
+        # 判断是否使用滑动窗口注意力
         use_sliding_windows = (
             _flash_supports_window_size
             and getattr(self.config, "sliding_window", None) is not None
@@ -386,14 +419,17 @@ class Qwen2FlashAttention2(Qwen2Attention):
             and self.config.use_sliding_window
         )
 
+        # 如果当前库版本不支持滑动窗口注意力，则发出警告
         if not _flash_supports_window_size:
             logger.warning_once(
                 "The current flash attention version does not support sliding window attention, for a more memory efficient implementation"
                 " make sure to upgrade flash-attn library."
             )
 
+        # 如果有过去的关键值缓存，则根据配置进行相应处理
         if past_key_value is not None:
             # Activate slicing cache only if the config has a value `sliding_windows` attribute
+            # 检查并更新缓存内容，激活滑动窗口切片
             cache_has_contents = past_key_value.get_seq_length(self.layer_idx) > 0
             if (
                 getattr(self.config, "sliding_window", None) is not None
@@ -402,12 +438,14 @@ class Qwen2FlashAttention2(Qwen2Attention):
             ):
                 slicing_tokens = 1 - self.config.sliding_window
 
+                # 更新过去关键值缓存并调整注意力掩码
                 past_key = past_key_value[self.layer_idx][0]
                 past_value = past_key_value[self.layer_idx][1]
 
                 past_key = past_key[:, :, slicing_tokens:, :].contiguous()
                 past_value = past_value[:, :, slicing_tokens:, :].contiguous()
 
+                # 检查过去关键值缓存的形状是否正确
                 if past_key.shape[-2] != self.config.sliding_window - 1:
                     raise ValueError(
                         f"past key must have a shape of (`batch_size, num_heads, self.config.sliding_window-1, head_dim`), got"
@@ -418,10 +456,12 @@ class Qwen2FlashAttention2(Qwen2Attention):
                     attention_mask = attention_mask[:, slicing_tokens:]
                     attention_mask = torch.cat([attention_mask, torch.ones_like(attention_mask[:, -1:])], dim=-1)
 
+            # 更新关键/值状态并存储旋转位置嵌入参数
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # repeat k/v heads if n_kv_heads < n_heads
+        # 如果num_key_value_heads小于num_heads，则重复键/值头部
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
         dropout_rate = 0.0 if not self.training else self.attention_dropout
@@ -450,10 +490,12 @@ class Qwen2FlashAttention2(Qwen2Attention):
             value_states = value_states.to(target_dtype)
 
         # Reashape to the expected shape for Flash Attention
+        # 将qkv转换为Flash Attention所期望的形状
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
+        # 调用_flash_attention_forward方法执行Flash Attention前向传播
         attn_output = self._flash_attention_forward(
             query_states,
             key_states,
@@ -464,9 +506,11 @@ class Qwen2FlashAttention2(Qwen2Attention):
             use_sliding_windows=use_sliding_windows,
         )
 
+        # 将注意力输出重塑并传递给输出全连接层
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
         attn_output = self.o_proj(attn_output)
 
+        # 如果不需要输出注意力权重，则设置为None
         if not output_attentions:
             attn_weights = None
 
@@ -504,6 +548,7 @@ class Qwen2FlashAttention2(Qwen2Attention):
             use_sliding_windows (`bool`, *optional*):
                 Whether to activate sliding window attention.
         """
+        # 根据配置决定是否采用因果性注意力（即自回归模式）
         if not self._flash_attn_uses_top_left_mask:
             causal = self.is_causal
         else:
@@ -511,19 +556,24 @@ class Qwen2FlashAttention2(Qwen2Attention):
             causal = self.is_causal and query_length != 1
 
         # Decide whether to use SWA or not by layer index.
+        # 根据层索引决定是否使用滑动窗口注意力
         if use_sliding_windows and self.layer_idx >= self.config.max_window_layers:
             use_sliding_windows = False
 
         # Contains at least one padding token in the sequence
+        # 如果存在填充情况，则首先处理并移除填充
         if attention_mask is not None:
             batch_size = query_states.shape[0]
+            # 调用 `_upad_input` 方法去除填充，并得到无填充的查询、键、值状态及其相关的索引和有效序列长度
             query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = self._upad_input(
                 query_states, key_states, value_states, attention_mask, query_length
             )
 
+            # 解构序列长度信息
             cu_seqlens_q, cu_seqlens_k = cu_seq_lens
             max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
 
+            # 根据是否启用滑动窗口注意力来调用不同的 Flash Attention 计算函数
             if not use_sliding_windows:
                 attn_output_unpad = flash_attn_varlen_func(
                     query_states,
@@ -551,9 +601,10 @@ class Qwen2FlashAttention2(Qwen2Attention):
                     causal=causal,
                     window_size=(self.config.sliding_window, self.config.sliding_window),
                 )
-
+            # 将无填充注意力输出恢复到原始长度，并重新填充到正确的位置
             attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
         else:
+            # 如果输入不存在填充，则直接调用 Flash Attention 函数计算注意力输出
             if not use_sliding_windows:
                 attn_output = flash_attn_func(
                     query_states,
@@ -578,36 +629,56 @@ class Qwen2FlashAttention2(Qwen2Attention):
 
     # Copied from transformers.models.mistral.modeling_mistral.MistralFlashAttention2._upad_input
     def _upad_input(self, query_layer, key_layer, value_layer, attention_mask, query_length):
+        """ 对包含填充的查询、键、值三层进行预处理，包括去除填充信息，确保它们只包含有效（非填充）的序列部分。
+            同时，该方法还会根据查询序列长度生成合适的索引和有效序列长度信息，以便在后续计算中使用。
+        """
         batch_size, kv_seq_len, num_heads, head_dim = key_layer.shape
 
         # On the first iteration we need to properly re-create the padding mask
         # by slicing it on the proper place
+        # 处理首次迭代时的特殊情况，确保注意力掩码与键层的长度一致
+        # 若两者长度不符，说明当前注意力掩码包含了多余的填充标记，需要对其进行切片修正
         if kv_seq_len != attention_mask.shape[-1]:
             attention_mask_num_tokens = attention_mask.shape[-1]
             attention_mask = attention_mask[:, attention_mask_num_tokens - kv_seq_len :]
 
+        # 调用 _get_unpad_data 函数处理注意力掩码，获取用于索引的有效序列长度数组、无填充序列长度以及批次内最大有效序列长度
         indices_k, cu_seqlens_k, max_seqlen_in_batch_k = _get_unpad_data(attention_mask)
 
+        # 根据获取的有效序列长度索引，对键层和价值层进行重塑和索引提取，移除填充部分
         key_layer = index_first_axis(key_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k)
         value_layer = index_first_axis(value_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k)
 
+        # 根据查询序列长度的不同，分别处理查询层
         if query_length == kv_seq_len:
+            # 若查询序列长度与键序列长度相同，则按照同样的索引提取查询层
             query_layer = index_first_axis(
                 query_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k
             )
+            # 查询层的有效序列长度与键层保持一致
             cu_seqlens_q = cu_seqlens_k
+            # 最大有效序列长度也保持一致
             max_seqlen_in_batch_q = max_seqlen_in_batch_k
+            # 使用相同的索引
             indices_q = indices_k
         elif query_length == 1:
+            # 若查询序列长度为1，则特殊处理，通常为序列开始位置的单点查询
             max_seqlen_in_batch_q = 1
+            # 创建一个序列长度数组
             cu_seqlens_q = torch.arange(
                 batch_size + 1, dtype=torch.int32, device=query_layer.device
             )  # There is a memcpy here, that is very bad.
+            # 此处可能存在内存复制效率问题，用于构建查询层的有效序列长度
+            # 取除了最后一个元素之外的所有元素作为索引
             indices_q = cu_seqlens_q[:-1]
+            # 对查询层进行重塑，去除第一个维度的长度为1的轴
             query_layer = query_layer.squeeze(1)
         else:
+            # 若查询序列长度既不等于键序列长度也不为1，则对注意力掩码和查询层进行针对性的去填充处理
+            # 假设填充是在左侧进行的，截取注意力掩码对应查询序列长度的部分
             # The -q_len: slice assumes left padding.
             attention_mask = attention_mask[:, -query_length:]
+            # 调用 unpad_input 函数处理查询层，获取去填充后的查询层、对应的索引、有效序列长度以及批次内最大有效序列长度
             query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q = unpad_input(query_layer, attention_mask)
 
         return (
@@ -638,6 +709,8 @@ class Qwen2SdpaAttention(Qwen2Attention):
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        # 当设置output_attentions=True时，由于torch.nn.functional.scaled_dot_product_attention不支持直接返回注意力权重
+        # 因此暂时降级回用父类的手动实现方式，并发出警告提示用户未来版本的更改要求
         if output_attentions:
             # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
             logger.warning_once(
@@ -652,24 +725,29 @@ class Qwen2SdpaAttention(Qwen2Attention):
                 output_attentions=output_attentions,
                 use_cache=use_cache,
             )
-
+        # 获取输入维度信息
         bsz, q_len, _ = hidden_states.size()
 
+        # 对输入进行线性映射得到query、key、value向量
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
+        # 将映射后的向量调整为多头注意力所需格式
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
+        # 计算有效的 kv 序列长度（考虑缓存的情况）
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+        
+        # 应用旋转位置嵌入（RoPE）
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
+        # 如果有缓存，更新key和value状态
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
@@ -690,6 +768,7 @@ class Qwen2SdpaAttention(Qwen2Attention):
             key_states = key_states.contiguous()
             value_states = value_states.contiguous()
 
+        # 使用scaled_dot_product_attention进行计算
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -700,9 +779,11 @@ class Qwen2SdpaAttention(Qwen2Attention):
             is_causal=self.is_causal and attention_mask is None and q_len > 1,
         )
 
+        # 还原注意力输出的形状
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(bsz, q_len, self.hidden_size)
 
+        # 将注意力输出通过最终的线性层（o_proj层）
         attn_output = self.o_proj(attn_output)
 
         return attn_output, None, past_key_value
@@ -815,12 +896,19 @@ QWEN2_START_DOCSTRING = r"""
 )
 class Qwen2PreTrainedModel(PreTrainedModel):
     config_class = Qwen2Config
+    # 定义了模型内部子模块命名的基础前缀，当加载或保存模型时，这个前缀将用于识别模型主体部分。
     base_model_prefix = "model"
+    # 表明该模型支持梯度检查点技术，这是一种内存优化策略，可减少模型训练时所需的显存
     supports_gradient_checkpointing = True
+    # 指定了在序列化过程中不应被拆分的模块列表，即在模型保存与加载时保持这些模块作为一个整体。
     _no_split_modules = ["Qwen2DecoderLayer"]
+    # 在跨设备数据移动时，指示哪些关键字（key）对应的数据应该跳过设备放置步骤。
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn_2 = True
+    # Scaled Dot Product Attention (SDPA) 
     _supports_sdpa = True
+    # 表示模型支持缓存机制，这在自回归模型（如Transformer解码器）中很常见，
+    # 用于存储先前计算的结果以加快后续时间步长的计算速度。
     _supports_cache_class = True
 
     def _init_weights(self, module):
@@ -944,8 +1032,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        position_ids: Optional[torch.LongTensor] = None,    # 每个输入序列词元在位置嵌入中的位置索引
+        past_key_values: Optional[List[torch.FloatTensor]] = None,  # 可用于加速序列解码预先计算的隐藏状态（自注意力块和交叉注意力块中的键和值）
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -987,9 +1075,11 @@ class Qwen2Model(Qwen2PreTrainedModel):
 
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
+            # 生成一个从past_key_values_length到seq_length + past_key_values_length的整数序列
             position_ids = torch.arange(
                 past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
             )
+            # 将生成的序列重塑为形状为(1, seq_length)的张量，然后展平为形状为(-1, seq_length)的张量
             position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
         else:
             position_ids = position_ids.view(-1, seq_length).long()
@@ -1006,6 +1096,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
                 )
 
+        # 适应不同注意力机制对注意力掩码的不同要求而设计的
         if self._attn_implementation == "flash_attention_2":
             # 2d mask is passed through the layers
             attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
@@ -1036,9 +1127,11 @@ class Qwen2Model(Qwen2PreTrainedModel):
         next_decoder_cache = None
 
         for decoder_layer in self.layers:
+            # 1.隐藏状态保存
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
+            # 2.梯度检查，方便在反向传播时只激活部分层，节省内存资源
+            # 3.解码层：
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
@@ -1058,12 +1151,12 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                 )
-
+            # 4.更新隐藏状态
             hidden_states = layer_outputs[0]
-
+            # 5.更新缓存
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
+            # 6.注意力输出保存
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
@@ -1184,13 +1277,22 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
+            # 对于自回归模型（如GPT系列），我们需要将模型输出的logits向前移动一位，
+            # 这样使得模型预测的是当前时刻 t 的下一个词，而非当前词本身
             shift_logits = logits[..., :-1, :].contiguous()
+            # 同时，也需要将真实标签（labels）向前移动一位以与调整后的logits对齐
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
+
+            # 将移位后的 logits 和 labels 扁平化，即将它们展平为一维张量
+            # 其中shift_logits变成 (batch_size * sequence_length, vocab_size) 的形式
+            # shift_labels变为 (batch_size * sequence_length) 的形式
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
+            
             # Enable model parallelism
+            # 确保模型并行计算时，labels的数据存储位置与logits一致
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
@@ -1209,6 +1311,9 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
+        """ 准备模型的输入参数
+            包括处理input_ids、past_key_values（历史隐藏状态缓存）、attention_mask以及可选的inputs_embeds。
+        """
         # Omit tokens covered by past_key_values
         if past_key_values is not None:
             if isinstance(past_key_values, Cache):
@@ -1219,17 +1324,15 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
                 cache_length = past_length = past_key_values[0][0].shape[2]
                 max_cache_length = None
 
-            # Keep only the unprocessed tokens:
-            # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
-            # some of the inputs are exclusively passed as part of the cache (e.g. when passing input_embeds as
-            # input)
+            # 根据缓存情况裁剪input_ids，只保留未处理的token：
+            # # 1. 如果 attention_mask 比 input_ids 更长，说明部分输入已通过缓存传递（如仅传入inputs_embeds）
             if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
+                # 取最后未处理的部分
                 input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
-            # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
-            # input_ids based on the past_length.
+            # 2. 若已处理的 token 数小于input_ids中的总数，表明input_ids包含全部输入，从中去掉已处理的部分
             elif past_length < input_ids.shape[1]:
                 input_ids = input_ids[:, past_length:]
-            # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
+            # 3. 否则，认为input_ids中只有待处理的新token
 
             # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
             if (
@@ -1239,7 +1342,9 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             ):
                 attention_mask = attention_mask[:, -max_cache_length:]
 
+        # 初始化或处理position_ids
         position_ids = kwargs.get("position_ids", None)
+        # 如果attention_mask存在但position_ids不存在，则基于attention_mask动态创建position_ids
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
@@ -1247,7 +1352,8 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             if past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        # 根据inputs_embeds和past_key_values的存在与否来决定模型输入
+        # 如果提供了inputs_embeds且没有past_key_values（首次生成步骤），则直接使用inputs_embeds作为模型输入
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {"inputs_embeds": inputs_embeds}
         else:
@@ -1265,8 +1371,12 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
+        """ 用于重新排序缓存中的历史隐藏状态，以适应束搜索（beam search）算法
+        """
         reordered_past = ()
+        # 遍历每一层的隐藏状态
         for layer_past in past_key_values:
+            # 对于每一层的每个隐藏状态向量，执行索引选择操作
             reordered_past += (
                 tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
             )
@@ -1347,22 +1457,34 @@ class Qwen2ForSequenceClassification(Qwen2PreTrainedModel):
 
         if self.config.pad_token_id is None and batch_size != 1:
             raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
+        # 确定输入序列的有效长度，即从起始到第一个填充符出现之前的所有非填充字符的数量
         if self.config.pad_token_id is None:
+            # 无法计算有效长度
             sequence_lengths = -1
         else:
             if input_ids is not None:
                 # if no pad token found, use modulo instead of reverse indexing for ONNX compatibility
+                # 对于给定的输入IDs（input_ids），查找其中等于填充符ID的位置
+                # argmax(-1)作用在最后一个维度上，找到每个序列中填充符首次出现的最大索引位置
+                # 因为索引是从0开始的，减去1可得到每个序列的有效字符数（不含填充符）
                 sequence_lengths = torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+                # 为了保证与ONNX兼容以及防止越界，当序列尾部被完全填充时，采用模运算来保持有效长度
+                # 即使索引超过了输入序列的实际长度，也会自动对应回到有效的范围之内
                 sequence_lengths = sequence_lengths % input_ids.shape[-1]
+                # 确保计算出的序列长度在与logits相同的设备上，便于后续操作
                 sequence_lengths = sequence_lengths.to(logits.device)
             else:
                 sequence_lengths = -1
 
+        # 提取实际标签对应的logits
+        # 使用arange函数生成一个从0到batch_size-1的索引，并与sequence_lengths结合，
+        # 选取每个样本的有效logit
         pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
 
         loss = None
         if labels is not None:
             labels = labels.to(logits.device)
+            # 若模型配置没有明确指定 problem_type ，则根据num_labels和labels的数据类型推断 problem_type 
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
@@ -1372,17 +1494,24 @@ class Qwen2ForSequenceClassification(Qwen2PreTrainedModel):
                     self.config.problem_type = "multi_label_classification"
 
             if self.config.problem_type == "regression":
+                # 使用均方误差损失函数
                 loss_fct = MSELoss()
+                 # 如果num_labels为1，则直接计算单输出的损失；否则，按列计算所有输出的损失
                 if self.num_labels == 1:
                     loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
                 else:
                     loss = loss_fct(pooled_logits, labels)
             elif self.config.problem_type == "single_label_classification":
+                # 单标签分类任务，使用交叉熵损失函数
                 loss_fct = CrossEntropyLoss()
+                # 将pooled_logits展平为(batch_size * num_labels)的形式，与同样展平后的labels进行比较
                 loss = loss_fct(pooled_logits.view(-1, self.num_labels), labels.view(-1))
             elif self.config.problem_type == "multi_label_classification":
+                # 多标签分类任务，使用带Sigmoid激活的二元交叉熵损失函数
                 loss_fct = BCEWithLogitsLoss()
+                # 直接计算sigmoid之前的logits与标签之间的损失
                 loss = loss_fct(pooled_logits, labels)
+
         if not return_dict:
             output = (pooled_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
