@@ -131,7 +131,7 @@ class Qwen2RotaryEmbedding(nn.Module):
 
         # 计算每个位置与每个维度的频率，形成频谱矩阵
         freqs = torch.outer(t, self.inv_freq)
-        
+
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         # 不同于论文中的实现，这里采用了不同的排列方式以获得相同的计算结果
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -335,7 +335,7 @@ class Qwen2Attention(nn.Module):
                 f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
                 f" {attn_output.size()}"
             )
-        
+
         # 还原注意力输出的形状以与后续层对接
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
@@ -1290,7 +1290,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             # shift_labels变为 (batch_size * sequence_length) 的形式
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
-            
+
             # Enable model parallelism
             # 确保模型并行计算时，labels的数据存储位置与logits一致
             shift_labels = shift_labels.to(shift_logits.device)
@@ -1496,7 +1496,7 @@ class Qwen2ForSequenceClassification(Qwen2PreTrainedModel):
             if self.config.problem_type == "regression":
                 # 使用均方误差损失函数
                 loss_fct = MSELoss()
-                 # 如果num_labels为1，则直接计算单输出的损失；否则，按列计算所有输出的损失
+                # 如果num_labels为1，则直接计算单输出的损失；否则，按列计算所有输出的损失
                 if self.num_labels == 1:
                     loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
                 else:
