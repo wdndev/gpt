@@ -908,6 +908,7 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         """ """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         # 展平，方便计算
+        # (batch_size * sequence_length, hidden_dim)
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         # 计算每个token到各个专家的路由得分（logits）
@@ -915,8 +916,10 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         router_logits = self.gate(hidden_states)
 
         # 得到每个token对各个专家的选择概率
+        # routing_weights : (batch_size * sequence_length, num_experts)
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         # 选择每个token分配给的前top_k个专家
+        # selected_experts : (batch_size * sequence_length, top_k)
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         # 如果norm_topk_prob选项为真，则对top_k个概率进行归一化处理
         if self.norm_topk_prob:
@@ -932,6 +935,7 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         )
 
         # 创建一个one-hot编码的专家掩码，用于快速索引所选择的专家
+        # expert_mask : (num_experts, top_k, batch_size * sequence_length)
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
         # 遍历所有专家并进行计算
@@ -957,10 +961,12 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
 
         # 计算共享专家的输出，并通过sigmoid门控层调节输出强度
+        # (batch_size * sequence_length, hidden_dim)
         shared_expert_output = self.shared_expert(hidden_states)
         shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
 
         # 将所有专家的输出和共享专家的输出合并
+        # final_hidden_states : (batch_size * sequence_length, hidden_dim)
         final_hidden_states = final_hidden_states + shared_expert_output
 
         # 将最终隐藏状态重塑回原始形状（batch_size, sequence_length, hidden_dim）
