@@ -1,0 +1,4 @@
+# 输出文件
+__pycache__
+
+llama.cpp\build

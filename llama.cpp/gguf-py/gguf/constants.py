@@ -10,6 +10,7 @@ from typing import Any
 
 GGUF_MAGIC             = 0x46554747  # "GGUF"
 GGUF_VERSION           = 3
+# 内存对齐使用
 GGUF_DEFAULT_ALIGNMENT = 32
 
 #
@@ -57,6 +58,8 @@ class Keys:
         CAUSAL            = "{arch}.attention.causal"
 
     class Rope:
+        """ 旋转位置编码相关
+        """
         DIMENSION_COUNT      = "{arch}.rope.dimension_count"
         FREQ_BASE            = "{arch}.rope.freq_base"
         SCALING_TYPE         = "{arch}.rope.scaling.type"
@@ -65,6 +68,8 @@ class Keys:
         SCALING_FINETUNED    = "{arch}.rope.scaling.finetuned"
 
     class SSM:
+        """ 状态空间模型（State Space Model, SSM）
+        """
         CONV_KERNEL    = "{arch}.ssm.conv_kernel"
         INNER_SIZE     = "{arch}.ssm.inner_size"
         STATE_SIZE     = "{arch}.ssm.state_size"
@@ -708,9 +713,9 @@ MODEL_TENSOR_SKIP: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
 class TokenType(IntEnum):
     NORMAL       = 1
     UNKNOWN      = 2
-    CONTROL      = 3
-    USER_DEFINED = 4
-    UNUSED       = 5
+    CONTROL      = 3    # 控制词元
+    USER_DEFINED = 4    # 用户自定义
+    UNUSED       = 5    # 未使用
     BYTE         = 6
 
 
@@ -721,6 +726,8 @@ class RopeScalingType(Enum):
 
 
 class PoolingType(IntEnum):
+    """ 不同池化操作
+    """
     NONE = 0
     MEAN = 1
     CLS  = 2
@@ -758,8 +765,10 @@ class GGMLQuantizationType(IntEnum):
 
 
 class GGUFEndian(IntEnum):
-    LITTLE = 0
-    BIG = 1
+    """ 字节序，数据在内存中存储顺序
+    """
+    LITTLE = 0  # 小端字节序，最低有效字节首先存储
+    BIG = 1     # 大端字节序，最高有效字节首先存储
 
 
 class GGUFValueType(IntEnum):
