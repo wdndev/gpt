@@ -15,16 +15,16 @@
 
 import warnings
 
-from ...configuration_utils import PretrainedConfig
-from ...utils import logging
-from ..auto import CONFIG_MAPPING
-
+from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import logging
+from transformers import CONFIG_MAPPING
+# from transformers
 
 logger = logging.get_logger(__name__)
 
 
-from ..deprecated._archive_maps import LLAVA_PRETRAINED_CONFIG_ARCHIVE_MAP  # noqa: F401, E402
 
+# from .deprecated._archive_maps import LLAVA_PRETRAINED_CONFIG_ARCHIVE_MAP  # noqa: F401, E402
 
 class LlavaConfig(PretrainedConfig):
     r"""

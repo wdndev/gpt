@@ -21,17 +21,17 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 
-from ... import PreTrainedModel
-from ...activations import ACT2FN
-from ...cache_utils import Cache
-from ...modeling_outputs import ModelOutput
-from ...utils import (
+from transformers import PreTrainedModel
+from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache
+from transformers.modeling_outputs import ModelOutput
+from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
     logging,
     replace_return_docstrings,
 )
-from ..auto import AutoModel, AutoModelForCausalLM
+from transformers import AutoModel, AutoModelForCausalLM
 from .configuration_llava import LlavaConfig
 
 
@@ -40,7 +40,7 @@ logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "LlavaConfig"
 
 
-from ..deprecated._archive_maps import LLAVA_PRETRAINED_MODEL_ARCHIVE_LIST  # noqa: F401, E402
+# from ..deprecated._archive_maps import LLAVA_PRETRAINED_MODEL_ARCHIVE_LIST  # noqa: F401, E402
 
 
 @dataclass
