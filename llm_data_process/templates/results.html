@@ -1,0 +1,149 @@
+<html>
+<head>
+    <title>Yulan-GARDEN: A Synthetic Data Processing Pipeline for Large Language Models</title>
+    <meta name="viewport" content="width=device-width, initial-scale=0.3,  maximum-scale=2.0">
+    <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="page-header">
+            <div class="row">
+                <div class="col-md-1">
+                    <a href="/retriever"><img src="{{ url_for('static', filename='imgs/rocket.png') }}" style="height: 60px; margin: 0px;"></a>
+                </div>
+                <div class="col-md-10">
+                    <h1>An Integrated Data Processing Framework for Pretraining Foundation Models</h1>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="container">
+                <form id="searchform" action="#" method="post">
+                    <div class="row" style="margin-top:10px;">
+                        <div class="col-md-1"></div>
+                        <div class="col-md-6" style="padding-right: 0px; min-width: 450px;">
+                            <span class="input-group-btn">
+                                <input class="form-control" id="search_box" name="query" value="{{ query }}" required="required">
+                            </span>
+                        </div>
+                        <div class="col-md-2" style="padding-left: 0px;">
+                        <button class="btn btn-info btn-search btn-block" id="search_btn" type="submit"><span class="glyphicon glyphicon-search" aria-hidden="true"></span></button>
+                        </div>
+                        <!-- <div class="col-md-3"></div> -->
+                </form>
+            </div>
+        </div>
+        <!-- <div class="row">
+            <div class="col-md-2"></div>
+            <div class="col-md-3" style="font-size: 15px; padding: 0px;">
+                {{ N }} Results &nbsp; Time cost: {{cost_time}}s 
+            </div>
+        </div> -->
+        <br>
+
+        <div class="row">
+            <div class="col-md-1"></div>
+            <div class="col-md-6" style="margin-bottom: 10px;">
+                <form method="POST" action="/retriever">
+                    <button type="submit" class="my-button" name="retrieve_task" id="retrieve_task" value="retrieve_task">return</button>
+                </form>
+            </div>
+        </div>
+        
+        
+
+        <hr style="width: 100%; color: #0e0320;"/>
+
+        {% for item in res %}
+        <div class="row" style="margin-left: 100px;">
+            <div>
+                <h3 class="info">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-earmark-fill" viewBox="0 0 16 16">
+                        <path d="M4 0h5.293A1 1 0 0 1 10 .293L13.707 4a1 1 0 0 1 .293.707V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2zm5.5 1.5v2a1 1 0 0 0 1 1h2l-3-3z"/>
+                        </svg>
+                    {{loop.index}}
+                </h3>
+                <span id="{{loop.index}}_passage">{{ item['text'] }}</span>
+            </div>
+            <div>
+                <br>
+                <span style="font-size: 15px; float: left;" id="{{loop.index}}_source"></span>
+                <span style="font-size: 15px; float: right;"> score: {{ item['score'] }} </span>
+            </div>
+        </div>
+        <hr style="width: 100%; color: #0e0320;"/>
+        {% endfor %}
+
+
+        <div class="t-right-bar">
+            <div class="t-bar-rocket" id="back-to-top"><img src="{{ url_for('static', filename='imgs/rocket.png') }}">TOP</div>
+        </div>
+
+
+        <script src="http://code.jquery.com/jquery-latest.js"></script>
+        <script>
+                
+            var stopWords = [];
+
+            function HighLight(string, keyword) {
+                var reg = new RegExp(keyword, "gi");
+                string = string.replace(reg, function(txt){
+                    return `<span class="search">` + txt + "</span>";
+                })
+                return string;
+            }
+
+            function find(searchVal) {
+                searchVal = searchVal.trim().split(/\s+/);
+                for(var i = 1; i <= {{ N }}; i++ ){
+                    for(var j = 0; j < searchVal.length; j ++){
+                        if(stopWords.indexOf(searchVal[j]) > -1){
+                            continue;
+                        }
+                        else{
+                            let passage = document.getElementById(i+'_passage');
+                            let source = document.getElementById(i+'_source');
+                            // var reg1 = /<script[^>]*>(.|\n)*<\/script>/gi;
+                            let passageText = passage.innerHTML;
+                            let sourceText = source.innerHTML; //.replace(reg1, "");
+                            let re = new RegExp(searchVal[j], "ig");
+                            passage.innerHTML = HighLight(passageText, re);
+                            source.innerHTML = HighLight(sourceText, re);
+                        }
+                    }
+                }
+            }
+            var query = String("{{query}}");
+            find(query);
+
+
+            $(".t-right-bar").hide();
+            $(function () {
+                $(window).scroll(function () {
+                    if ($(window).scrollTop() > 1000) {
+                        $(".t-right-bar").fadeIn(500);
+                    }
+                    else {
+                        $(".t-right-bar").fadeOut(500);
+                    }
+                });
+
+                $("#back-to-top").click(function () {
+                    $('body,html').animate({scrollTop: 0}, 500);
+                    return false;
+                });
+            });
+
+            for(var i = 1; i <= {{ N }}; i++ ){
+                let text = document.getElementById(i+'_passage');
+                let formattedText = text.innerHTML.replace(/\n/g, "<br>");
+                document.getElementById(i+'_passage').innerHTML = formattedText;
+            }
+
+        </script>
+
+</body>
+</html>

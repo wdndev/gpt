@@ -1,0 +1,115 @@
+<html>
+<head>
+    <title>An Integrated Data Processing Framework for Pretraining Foundation Models</title>
+    <meta name="viewport" content="width=device-width, initial-scale=0.3,  maximum-scale=2.0">
+    <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@3.3.7/dist/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+
+</head>
+<body>
+    <div class="container">
+        <div class="page-header">
+            <div class="row">
+                <div class="col-md-1">
+                    <a href="/retriever"><img src="{{ url_for('static', filename='imgs/rocket.png') }}" style="height: 60px; margin: 0px;"></a>
+                </div>
+                <div class="col-md-10">
+                    <h1>An Integrated Data Processing Framework for Pretraining Foundation Models</h1>
+                </div>
+            </div>
+        </div>
+
+        <div class="wrapper">
+            <div class="sidebar">
+                <ul>
+                <li>Config type</li>
+                <li class="with-indent">Select a config</li>
+                <li class="with-indent">Customize a config</li>
+                <li>Analyzing results</li>
+                <li>Processing</li>
+                <li class="active">Retriever</li>
+                <!-- <li class="with-indent">Retriever results</li> -->
+                </ul>
+            </div>
+
+            <div class="row">
+                <div class="container">
+                    <form id="searchform" action="/text_search" method="post">
+                        <div class="row" style="margin-top:10px;">
+                            <div class="col-md-6" style="padding-right: 0px; min-width: 450px;">
+                                <span class="input-group-btn">
+                                    <input class="form-control" id="search_box" name="query" placeholder="Please input a query" required="required">
+                                </span>
+                            </div>
+                            <div class="col-md-2" style="padding-left: 0px;">
+                            <button class="btn btn-info btn-search btn-block" id="search_btn" type="submit"><span class="glyphicon glyphicon-search" aria-hidden="true"></span></button>
+                            </div>
+                        </div><br>
+                        <div class="row" style="text-align: left; font-size: 20px; font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">
+                            <div class="col-md-1"></div>
+                            {% for data_name in data_names %}
+                                <div class="col-md-2">
+                                    <label>
+                                        <input type="radio" class="radio-inline" name="searchtype" checked="checked" value="{{ data_name }}">
+                                        <span style="color: rgb(0, 0, 0); vertical-align: middle;">{{ data_name }}</span>
+                                    </label>
+                                </div>
+                            {% endfor %}                            
+                            <div class="col-md-3"></div>
+                        </div>
+                    </form>
+                    {% if source == 'input_path' %}
+                        <!-- return to show_config page -->
+                        <div class="col-md-6" style="margin-bottom: 10px;">
+                            <form method="POST" action="/show_config">
+                                <button type="submit" class="my-button" name="retriever_back" id="retriever_back" value="retriever_back">return</button>
+                            </form>
+                        </div>
+                    {% elif source == 'output_path' %}
+                        <!-- return to show_config page -->
+                        <div class="col-md-6" style="margin-bottom: 10px;">
+                            <form method="POST" action="/processing">
+                                <button type="submit" class="my-button" name="retriever_back" id="retriever_back" value="retriever_back">return</button>
+                            </form>
+                        </div>
+                    {% else %}
+                        <!-- return to show_config page -->
+                        <div class="col-md-6" style="margin-bottom: 10px;">
+                            <form method="POST" action="/">
+                                <button type="submit" class="my-button" name="retriever_back" id="retriever_back" value="retriever_back">return</button>
+                            </form>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+            <!-- <div class="custom-row">
+                
+            </div> -->
+        </div>
+     </div>
+
+     <script src="http://code.jquery.com/jquery-latest.js"></script>
+     <script>
+        $(document).ready(function(){
+            $("#search_btn").click(function(){
+                var a = $("input[name='searchtype']:checked").val();
+                var newUrl = "/text_search/?qtype=" + encodeURIComponent(a);
+                $("#searchform").attr('action', newUrl);  
+                $("#searchform").submit(a);  
+            })
+        });
+    
+
+        function change1(){
+            var inputType="${requestScope.flag}"; 
+            var rd=document.getElementsByName("searchtype");
+            for(var i=0; i<rd.length; i++){
+                if(inputType==i){
+                    rd[i].checked=true;
+                }
+            }
+        }
+    </script>
+</body>
+</html>

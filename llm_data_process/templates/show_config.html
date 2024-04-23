@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>An Integrated Data Processing Framework for Pretraining Foundation Models</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+
+
+<body>
+    <div class="container" >
+        <div class="page-header">
+            <div class="row">
+                <div class="col-md-1">
+                    <a href="/retriever"><img src="{{ url_for('static', filename='imgs/rocket.png') }}" style="height: 60px; margin: 0px;"></a>
+                </div>
+                <div class="col-md-10">
+                    <h1>An Integrated Data Processing Framework for Pretraining Foundation Models</h1>
+                </div>
+            </div>
+        </div>
+        
+        <div class="wrapper">
+            <div class="sidebar">
+                <ul>
+                <li>Config type</li>
+                <li class="with-indent">Select a config</li>
+                <li class="with-indent">Customize a config</li>
+                <li class="active">Analyzing results</li>
+                <li>Processing</li>
+                <li>Retriever</li>
+                <!-- <li class="with-indent">Retriever results</li> -->
+                </ul>
+            </div>
+            
+            <div class="container">
+
+                {% if ret_args %}
+                    {% if ret_args['warning'] %}
+                        <div class="row">
+                            <div class="col-md-12">
+                                <h2 style="text-align: left; padding-left: 0px; margin-bottom: 40px;">&nbsp; {{ ret_args['warning']}}</h2>
+                            </div>
+                        </div>
+                    {% else %}                        
+                        <div class="row custom-row">
+                            <!-- submit task -->
+                            <div class="col-md-6" style="margin-bottom: 10px;">
+                                <form action="/processing" method="post">
+                                    <button type="submit" class="my-button" id="submit_task" name="submit_task" value="submit_task">submit the task</button>
+                                </form>
+                            </div>
+                            <!-- retriever task -->
+                            <div class="col-md-6" style="margin-bottom: 10px;">
+                                <form method="POST" action="/retriever">
+                                    <button type="submit" class="my-button" id="retrieve_task" name="retrieve_task" value="retrieve_task">retrieve</button>
+                                </form>
+                            </div>
+                        </div>
+                    {% endif %}
+                    <br>
+                    
+                    {% if ret_args['if_debug'] %}
+                        <details>
+                            <summary class="details-summary">details of debug file</summary>
+                            <div class="content">
+                                <pre>{{ret_args['debug_file']}}</pre>
+                            </div>
+                        </details>
+                        <br>
+                        <br>
+                        <details>
+                            <summary class="details-summary">dirstribution of data</summary>
+                                {% if ret_args['figs_list']|length > 0 %}
+                                    <div class="image-container">
+                                            {% for fig_path in ret_args['figs_list'] %}
+                                                <div class="image-item">
+                                                    <img src="{{ fig_path }}">
+                                                </div>
+                                            {% endfor %}
+                                    </div>
+                                {% endif %}
+                        </details>
+                        <br>
+                        <br>
+                    {% endif %}            
+                {% endif %}
+                <details>
+                    <summary class="details-summary">details of config file</summary>
+                    <div class="content">
+                        {% if config|safe %}
+                            <pre>{{config|safe}}</pre>
+                        {% endif %}
+                    </div>
+                </details>    
+                <br>
+                <br>
+                
+                
+                <div class="row">
+                    <!-- return to index page -->
+                    <div class="col-md-6" style="margin-bottom: 10px;">
+                        <form method="POST" action="/">
+                            <button type="submit" class="my-button" id="myButton">return to the home page</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+    </div>
+
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+</body>
+</html>
