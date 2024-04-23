@@ -26,37 +26,51 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
         self.vpm = self.init_vision_module()
         self.vision_dim = self.vpm.embed_dim
         self.embed_dim = self.llm.config.hidden_size
+        # 初始化Resampler模块，用于融合语言和视觉特征
         self.resampler = self.init_resampler(self.embed_dim, self.vision_dim)
+        # 初始化图像预处理变换模块
         self.transform = self.init_transform()
 
     def init_vision_module(self):
+        """ 返回一个预训练模型
+        """
         model = timm.create_model(
             self.config.vision_encoder,
-            pretrained=False,
-            num_classes=0,
-            dynamic_img_size=True,
-            dynamic_img_pad=True
+            pretrained=False,       # 不加载预训练权重
+            num_classes=0,          # 不需要分类头
+            dynamic_img_size=True,  # 支持动态图像尺寸
+            dynamic_img_pad=True    # 支持图像填充
         )
 
+        # 如果模型是VisionTransformer类型，并且存在attn_pool层，
+        # 则将其替换为恒等映射层（Identity）
         if isinstance(model, timm.models.VisionTransformer):
             if model.attn_pool is not None:
                 model.attn_pool = torch.nn.Identity()
 
+        # 如果配置参数drop_vision_last_layer为True，则移除视觉模型的最后一层
         if self.config.drop_vision_last_layer:
             model.blocks = model.blocks[:-1]
 
         return model
 
     def init_resampler(self, embed_dim, vision_dim):
+        """ 返回sampler，用于融合语言和视觉特征
+        """
         return Resampler(
-            grid_size=int(math.sqrt(self.config.query_num)),
+            grid_size=int(math.sqrt(self.config.query_num)),    # 网格大小
             embed_dim=embed_dim,
-            num_heads=embed_dim // 128,
-            kv_dim=vision_dim,
+            num_heads=embed_dim // 128, # 注意力头数
+            kv_dim=vision_dim,          # 键值对维度
             adaptive=True
         )
 
     def init_transform(self):
+        """ 初始化图像变换方法，包含ToTensor和Normalize两个变换
+            - ToTensor将图像数据转换为张量
+            - Normalize对图像数据进行归一化处理，
+                均值和标准差来自于IMAGENET_INCEPTION_MEAN和IMAGENET_INCEPTION_STD常量
+        """
         return transforms.Compose(
             [
                 transforms.ToTensor(),
@@ -67,26 +81,41 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
         )
 
     def get_vision_embedding(self, pixel_values):
+        """ 获取视觉特征向量，对像素值进行预处理并输入到视觉模型VPM中，然后通过Resampler模块调整特征维度
+            - pixel_values - 输入的像素值张量列表
+        """
         res = []
         dtype = self.vpm.pos_embed.data.dtype
         for pixel_value in pixel_values:
+            # 计算目标大小（调整后适合Patch Embedding模块的尺寸）
             H, W = pixel_value.shape[-2:]
             tgt_size = (
-            math.ceil(H / self.vpm.patch_embed.patch_size[0]), math.ceil(W / self.vpm.patch_embed.patch_size[0]))
+                math.ceil(H / self.vpm.patch_embed.patch_size[0]), 
+                math.ceil(W / self.vpm.patch_embed.patch_size[0])
+            )
+            # 将像素值送入视觉模型获取特征向量
             vision_embedding = self.vpm.forward_features(pixel_value.unsqueeze(0).type(dtype))
+            # 如果视觉模型有prefix tokens，移除这部分tokens的特征
             if hasattr(self.vpm, 'num_prefix_tokens') and self.vpm.num_prefix_tokens > 0:
                 vision_embedding = vision_embedding[:, self.vpm.num_prefix_tokens:]
+            # 通过Resampler模块对视觉特征向量进行重采样
             res.append(self.resampler(vision_embedding, tgt_size))
+        # 将所有样本的特征堆叠成一个大张量
         return torch.vstack(res)
 
     def get_vllm_embedding(self, data):
+        """ 获取融合了视觉信息的语言模型embedding向量
+            - data - 包含输入数据的字典，至少包含 "input_ids" 和 "pixel_values"
+        """
         if "vision_hidden_states" not in data:
             pixel_values_list = data["pixel_values"]
             vision_hidden_states = []
             for pixel_values in pixel_values_list:
+                # 若有像素值，计算视觉特征
                 if len(pixel_values) > 0:
                     vision_hidden_states.append(self.get_vision_embedding(pixel_values))
                 elif self.training:
+                    # 在训练阶段，若没有像素值，使用零值占位图片计算视觉特征
                     dtype = self.vpm.pos_embed.data.dtype
                     device = self.vpm.pos_embed.data.device
                     dummy_image = torch.zeros(
@@ -95,24 +124,27 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                     vision_hidden_states.append(self.get_vision_embedding(dummy_image))
                 else:
                     vision_hidden_states.append([])
-
+        # 若存在预计算的vision_hidden_states，则直接使用
         else:
             vision_hidden_states = data["vision_hidden_states"]
 
         vllm_embedding = (
             self.llm.model.embed_tokens(data["input_ids"]) * self.llm.config.scale_emb
         )
+        # 确保视觉特征和语言模型嵌入向量的数据类型一致
         vision_hidden_states = [
             i.type(vllm_embedding.dtype) if isinstance(i, torch.Tensor) else i
             for i in vision_hidden_states
         ]
 
+        # 遍历batch size，融合视觉特征和语言模型嵌入向量
         bs = len(data["input_ids"])
         for i in range(bs):
             cur_vs_hs = vision_hidden_states[i]
             if len(cur_vs_hs) > 0:
                 cur_vllm_emb = vllm_embedding[i]
                 cur_image_bound = data["image_bound"][i]
+                # 如果存在图像边界信息，将视觉特征对应位置融入语言模型嵌入向量
                 if len(cur_image_bound) > 0:
                     image_indices = torch.stack(
                         [
@@ -127,11 +159,16 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                         cur_vs_hs.view(-1, cur_vs_hs.shape[-1]),
                     )
                 elif self.training:
+                    # 在训练阶段，即使没有图像边界信息，
+                    # 也将平均视觉特征与语言模型嵌入向量相加
+                    # （乘以0只是为了保持更新，实际不改变数值）
                     cur_vllm_emb += cur_vs_hs[0].mean() * 0
 
         return vllm_embedding, vision_hidden_states
 
     def forward(self, data, **kwargs):
+        """ data - 包含输入数据的字典，至少包含"input_ids"和"position_ids"
+        """
         vllm_embedding, vision_hidden_states = self.get_vllm_embedding(data)
         position_ids = data["position_ids"]
         if position_ids.dtype != torch.int64:
