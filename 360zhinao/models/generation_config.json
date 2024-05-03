@@ -1,0 +1,12 @@
+{
+    "do_sample": true,
+    "top_k": 0,
+    "top_p": 0.8,
+    "temperature": 1.0,
+    "repetition_penalty": 1.0,
+    "pad_token_id": 158326,
+    "eos_token_id": [158326],
+    "max_new_tokens": 1024,
+    "_from_model_config": true,
+    "transformers_version": "4.38.2"
+}

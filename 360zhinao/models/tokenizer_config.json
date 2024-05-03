@@ -1,0 +1,18 @@
+{
+  "added_tokens_decoder": {},
+  "auto_map": {
+    "AutoTokenizer": [
+      "tokenization_zhinao.ZhinaoTokenizer",
+      null
+    ]
+  },
+  "clean_up_tokenization_spaces": false,
+  "do_lower_case": false,
+  "eos_token": "<eod>",
+  "model_max_length": 4096,
+  "pad_token": "<pad>",
+  "padding_side": "left",
+  "remove_space": false,
+  "tokenizer_class": "ZhinaoTokenizer",
+  "unk_token": "<unk>"
+}
