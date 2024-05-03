@@ -230,6 +230,6 @@ if __name__ == "__main__":
     output = resampler(x, tgt_size)
 
     # 输出结果信息
-    print("Input shape:", x.shape)
-    print("Target size (if adaptive):", tgt_size)
-    print("Output shape after Resampler:", output.shape)
+    print("Input shape:", x.shape)      # Input shape: torch.Size([1, 256, 64])
+    print("Target size (if adaptive):", tgt_size)   # Target size (if adaptive): (16, 16)
+    print("Output shape after Resampler:", output.shape)    # Output shape after Resampler: torch.Size([1, 16, 64])
